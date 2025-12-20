@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands, tasks
 from core.errors import IntegrationError
 from core.database import DownloadJobDB
+from config import settings
 from typing import List, Dict, Any, Union, Optional
 from datetime import datetime
 import subprocess
@@ -265,9 +266,9 @@ class CopyToSMBButton(discord.ui.Button):
             
             # Construct docker cp command
             # Format: docker cp 'qbittorrent:/app/qBittorrent/downloads/torrent_name' /mnt/SMB_PATH
-            # Note: The container name should match your qBittorrent container name
-            # The destination path is on the host filesystem
-            container_name = "qbittorrent"  # TODO: Make this configurable via environment variable
+            # Note: The container name is configurable via QBIT_CONTAINER_NAME environment variable
+            # The destination path is on the host filesystem (not in the container)
+            container_name = settings.QBIT_CONTAINER_NAME
             dest_path = f"/mnt/{self.smb_path}"
             
             # Send initial message

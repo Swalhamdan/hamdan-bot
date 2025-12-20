@@ -25,6 +25,7 @@ class Settings:
     QBIT_HOST: Optional[str] = os.getenv("QBIT_HOST", None)
     QBIT_USERNAME: Optional[str] = os.getenv("QBIT_USERNAME", None)
     QBIT_PASSWORD: Optional[str] = os.getenv("QBIT_PASSWORD", None)
+    QBIT_CONTAINER_NAME: str = os.getenv("QBIT_CONTAINER_NAME", "qbittorrent")
     
     # Add more service configurations here as needed
     # Example:

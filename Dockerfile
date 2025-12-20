@@ -11,8 +11,20 @@ ENV PYTHONUNBUFFERED=1 \
 # Install system dependencies including docker CLI
 # Docker CLI is needed to execute docker cp commands on the host
 # Note: We only need the CLI, not the daemon, since we mount the host's docker socket
+# Download Docker CLI static binary directly (simpler than package manager)
+# Detect architecture and download appropriate binary
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    docker.io \
+    curl \
+    && ARCH=$(dpkg --print-architecture) \
+    && if [ "$ARCH" = "amd64" ]; then DOCKER_ARCH="x86_64"; \
+       elif [ "$ARCH" = "arm64" ]; then DOCKER_ARCH="aarch64"; \
+       elif [ "$ARCH" = "armhf" ]; then DOCKER_ARCH="armel"; \
+       else DOCKER_ARCH="x86_64"; fi \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-24.0.7.tgz" -o /tmp/docker.tgz \
+    && tar -xz -C /tmp -f /tmp/docker.tgz \
+    && mv /tmp/docker/docker /usr/local/bin/docker \
+    && chmod +x /usr/local/bin/docker \
+    && rm -rf /tmp/docker.tgz /tmp/docker \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
