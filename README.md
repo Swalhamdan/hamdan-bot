@@ -73,6 +73,209 @@ The bot uses a modular integration system where each external service (qBittorre
    docker-compose down
    ```
 
+## Server Deployment
+
+### Prerequisites
+
+1. **Install Docker and Docker Compose** on your server:
+   ```bash
+   # For Ubuntu/Debian
+   curl -fsSL https://get.docker.com -o get-docker.sh
+   sudo sh get-docker.sh
+   sudo usermod -aG docker $USER
+   
+   # Install Docker Compose (if not included)
+   sudo apt-get update
+   sudo apt-get install docker-compose-plugin
+   
+   # Log out and back in for group changes to take effect
+   ```
+
+2. **Verify Installation**:
+   ```bash
+   docker --version
+   docker compose version
+   ```
+
+### Deployment Steps
+
+**Option A: Clone from Git Repository** (Recommended)
+
+1. **SSH into Your Server**:
+   ```bash
+   ssh user@your-server
+   ```
+
+2. **Clone the Repository**:
+   ```bash
+   # Install git if not already installed
+   sudo apt-get update && sudo apt-get install -y git
+   
+   # Clone the repository
+   git clone <your-repository-url> /opt/discord-bot
+   cd /opt/discord-bot
+   ```
+
+3. **Create `.env` File**:
+   ```bash
+   nano .env
+   ```
+   Add your configuration:
+   ```env
+   BOT_TOKEN=your_discord_bot_token_here
+   PREFIX=!
+   
+   # qBittorrent configuration
+   # If qBittorrent is on the same server, use the server's IP or hostname
+   # If qBittorrent is in another container, use the container name
+   QBIT_HOST=http://localhost:8080
+   QBIT_USERNAME=admin
+   QBIT_PASSWORD=adminadmin
+   ```
+
+4. **Build and Start the Container**:
+   ```bash
+   # Build the image
+   docker compose build
+   
+   # Start in detached mode
+   docker compose up -d
+   ```
+
+5. **Verify It's Running**:
+   ```bash
+   # Check container status
+   docker compose ps
+   
+   # View logs
+   docker compose logs -f bot
+   ```
+
+**Option B: Transfer Files Manually**
+
+1. **Transfer Files to Server** (from your local machine):
+   ```bash
+   # Using scp
+   scp -r . user@your-server:/opt/discord-bot/
+   
+   # Or using rsync (excludes .git, __pycache__, etc.)
+   rsync -av --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' . user@your-server:/opt/discord-bot/
+   ```
+
+2. **SSH into Your Server**:
+   ```bash
+   ssh user@your-server
+   cd /opt/discord-bot
+   ```
+
+3. **Continue from step 3 above** (Create `.env` file)
+
+### Managing the Service
+
+**View Logs**:
+```bash
+# Follow logs in real-time
+docker compose logs -f bot
+
+# View last 100 lines
+docker compose logs --tail=100 bot
+```
+
+**Restart the Bot**:
+```bash
+docker compose restart bot
+```
+
+**Stop the Bot**:
+```bash
+docker compose stop bot
+```
+
+**Start the Bot**:
+```bash
+docker compose start bot
+```
+
+**Update and Rebuild**:
+```bash
+# If using Git, pull latest changes:
+git pull
+
+# Then rebuild and restart:
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+**Check Container Health**:
+```bash
+docker compose ps
+docker inspect discord-home-automation-bot | grep -A 10 Health
+```
+
+### Optional: Auto-Start on Boot (systemd)
+
+Create a systemd service for automatic startup:
+
+1. **Create Service File**:
+   ```bash
+   sudo nano /etc/systemd/system/discord-bot.service
+   ```
+
+2. **Add the Following** (adjust paths as needed):
+   ```ini
+   [Unit]
+   Description=Discord Home Automation Bot
+   Requires=docker.service
+   After=docker.service
+
+   [Service]
+   Type=oneshot
+   RemainAfterExit=yes
+   WorkingDirectory=/path/to/bot
+   ExecStart=/usr/bin/docker compose up -d
+   ExecStop=/usr/bin/docker compose down
+   TimeoutStartSec=0
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+3. **Enable and Start**:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable discord-bot.service
+   sudo systemctl start discord-bot.service
+   ```
+
+4. **Check Status**:
+   ```bash
+   sudo systemctl status discord-bot.service
+   ```
+
+### Troubleshooting
+
+**Container won't start**:
+```bash
+# Check logs for errors
+docker compose logs bot
+
+# Check if port is already in use
+sudo netstat -tulpn | grep :8080
+```
+
+**Can't connect to qBittorrent**:
+- If qBittorrent is on the host: Use `http://host.docker.internal:8080` (Linux) or the host's IP address
+- If qBittorrent is in another container: Use the container name or service name
+- Ensure qBittorrent's Web UI is enabled and accessible
+
+**Permission Issues**:
+```bash
+# Ensure Docker group is set up
+sudo usermod -aG docker $USER
+# Log out and back in
+```
+
 ### Option 2: Local Development
 
 1. **Install Dependencies**:
