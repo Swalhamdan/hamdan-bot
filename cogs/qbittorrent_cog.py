@@ -2,9 +2,13 @@
 Discord commands for qBittorrent integration.
 """
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from core.errors import IntegrationError
-from typing import List, Dict, Any, Union
+from core.database import DownloadJobDB
+from typing import List, Dict, Any, Union, Optional
+from datetime import datetime
+import subprocess
+import asyncio
 
 
 def extract_torrent_info(torrent: Union[Dict[str, Any], Any]) -> Dict[str, str]:
@@ -134,9 +138,10 @@ class SearchResultsView(discord.ui.View):
 class DownloadSelect(discord.ui.Select):
     """Select menu for choosing a torrent to download."""
     
-    def __init__(self, torrents: List[Dict[str, Any]], qbit_integration):
+    def __init__(self, torrents: List[Dict[str, Any]], qbit_integration, db: DownloadJobDB):
         self.torrents = torrents
         self.qbit = qbit_integration
+        self.db = db
         
         # Create options from torrents (Discord limit is 25 options)
         options = []
@@ -184,9 +189,24 @@ class DownloadSelect(discord.ui.Select):
         
         # Add torrent to qBittorrent
         try:
-            await self.qbit.add_torrent(download_url)
+            torrent_hash = await self.qbit.add_torrent(download_url)
+            
+            # Save job to database if we got a hash
+            if torrent_hash:
+                user_id = interaction.user.id
+                channel_id = interaction.channel.id if interaction.channel else None
+                message_id = interaction.message.id if interaction.message else None
+                
+                self.db.add_job(
+                    user_id=user_id,
+                    torrent_hash=torrent_hash,
+                    torrent_name=title,
+                    channel_id=channel_id,
+                    message_id=message_id
+                )
+            
             await interaction.response.send_message(
-                f"✅ Added torrent: **{title[:100]}**\nDownload started!",
+                f"✅ Added torrent: **{title[:100]}**\nDownload started! You'll be notified when it completes.",
                 ephemeral=True
             )
         except IntegrationError as e:
@@ -204,9 +224,175 @@ class DownloadSelect(discord.ui.Select):
 class DownloadSelectView(discord.ui.View):
     """View containing the download select menu."""
     
-    def __init__(self, torrents: List[Dict[str, Any]], qbit_integration, *, timeout: float = 180):
+    def __init__(self, torrents: List[Dict[str, Any]], qbit_integration, db: DownloadJobDB, *, timeout: float = 180):
         super().__init__(timeout=timeout)
-        self.add_item(DownloadSelect(torrents, qbit_integration))
+        self.add_item(DownloadSelect(torrents, qbit_integration, db))
+
+
+class CopyToSMBButton(discord.ui.Button):
+    """Button for copying torrent to SMB share."""
+    
+    def __init__(self, label: str, smb_path: str, torrent_hash: str, torrent_name: str, qbit_integration, db: DownloadJobDB):
+        super().__init__(label=label, style=discord.ButtonStyle.primary)
+        self.smb_path = smb_path
+        self.torrent_hash = torrent_hash
+        self.torrent_name = torrent_name
+        self.qbit = qbit_integration
+        self.db = db
+    
+    async def callback(self, interaction: discord.Interaction):
+        """Handle button click to copy files to SMB share."""
+        await interaction.response.defer()
+        
+        try:
+            # Get torrent info to find the content path
+            torrent_info = await self.qbit.get_torrent_by_hash(self.torrent_hash)
+            if not torrent_info:
+                await interaction.followup.send(
+                    "❌ Torrent not found. It may have been deleted.",
+                    ephemeral=True
+                )
+                return
+            
+            # Get the content path (where files are stored in qBittorrent container)
+            content_path = torrent_info.get("content_path", "") or torrent_info.get("save_path", "")
+            if not content_path:
+                await interaction.followup.send(
+                    "❌ Could not determine torrent file location.",
+                    ephemeral=True
+                )
+                return
+            
+            # Construct docker cp command
+            # Format: docker cp 'qbittorrent:/app/qBittorrent/downloads/torrent_name' /mnt/SMB_PATH
+            # Note: The container name should match your qBittorrent container name
+            # The destination path is on the host filesystem
+            container_name = "qbittorrent"  # TODO: Make this configurable via environment variable
+            dest_path = f"/mnt/{self.smb_path}"
+            
+            # Send initial message
+            await interaction.followup.send(
+                f"📋 Copying **{self.torrent_name[:100]}** to **{self.smb_path}**... This may take a while.",
+                ephemeral=False
+            )
+            
+            # Execute docker cp command
+            # This works from within a container when Docker socket is mounted at /var/run/docker.sock
+            # The docker command will communicate with the host's Docker daemon through the socket
+            try:
+                # Execute docker cp: docker cp <container>:<source_path> <dest_path>
+                # The destination path is on the host filesystem
+                process = await asyncio.create_subprocess_exec(
+                    "docker", "cp", f"{container_name}:{content_path}", dest_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await process.communicate()
+                
+                if process.returncode != 0:
+                    error_msg = stderr.decode() if stderr else "Unknown error"
+                    # Check if docker command was not found
+                    if "docker: command not found" in error_msg or "docker: not found" in error_msg:
+                        error_msg = "Docker CLI not found in container. Please ensure docker.io is installed in the Dockerfile."
+                    
+                    await interaction.followup.send(
+                        f"❌ Error copying files: {error_msg}\n\n"
+                        f"**Debug info:**\n"
+                        f"- Container: {container_name}\n"
+                        f"- Source: {content_path}\n"
+                        f"- Destination: {dest_path}\n"
+                        f"- Make sure Docker socket is mounted and docker CLI is installed",
+                        ephemeral=False
+                    )
+                    return
+                
+                # Successfully copied, now delete the torrent
+                try:
+                    # Delete torrent with files
+                    await self.qbit.delete_torrent(self.torrent_hash, delete_files=True)
+                    
+                    # Update job status
+                    self.db.update_job_status(self.torrent_hash, "copied_and_deleted")
+                    
+                    # Disable all buttons in the view
+                    for item in self.view.children:
+                        if isinstance(item, discord.ui.Button):
+                            item.disabled = True
+                    
+                    # Try to edit the original message to disable buttons
+                    try:
+                        await interaction.message.edit(view=self.view)
+                    except Exception:
+                        pass  # If we can't edit, that's okay
+                    
+                    await interaction.followup.send(
+                        f"✅ Successfully copied **{self.torrent_name[:100]}** to **{self.smb_path}** and deleted from qBittorrent!",
+                        ephemeral=False
+                    )
+                except IntegrationError as e:
+                    await interaction.followup.send(
+                        f"⚠️ Files copied successfully, but error deleting torrent: {str(e)}",
+                        ephemeral=False
+                    )
+                except Exception as e:
+                    await interaction.followup.send(
+                        f"⚠️ Files copied successfully, but error deleting torrent: {str(e)}",
+                        ephemeral=False
+                    )
+                    
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Error executing copy command: {str(e)}",
+                    ephemeral=False
+                )
+        
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Unexpected error: {str(e)}",
+                ephemeral=False
+            )
+
+
+class CopyToSMBView(discord.ui.View):
+    """View containing buttons to copy torrent to SMB shares."""
+    
+    PRIVATE_CHANNEL_ID = 1451977499553829004
+    
+    def __init__(
+        self,
+        torrent_hash: str,
+        torrent_name: str,
+        qbit_integration,
+        db: DownloadJobDB,
+        user: Union[discord.Member, discord.User],
+        channel_id: int,
+        *,
+        timeout: float = 300
+    ):
+        super().__init__(timeout=timeout)
+        self.torrent_hash = torrent_hash
+        self.torrent_name = torrent_name
+        self.qbit = qbit_integration
+        self.db = db
+        
+        # Check if user is admin (only works for Member, not User)
+        is_admin = False
+        if isinstance(user, discord.Member):
+            is_admin = user.guild_permissions.administrator
+        elif hasattr(user, 'guild_permissions'):
+            is_admin = user.guild_permissions.administrator
+        
+        # Check if in private channel
+        is_private_channel = channel_id == self.PRIVATE_CHANNEL_ID
+        
+        # Always show Movies and Shows buttons
+        self.add_item(CopyToSMBButton("Movies", "Movies", torrent_hash, torrent_name, qbit_integration, db))
+        self.add_item(CopyToSMBButton("Shows", "Shows", torrent_hash, torrent_name, qbit_integration, db))
+        
+        # Only show Private buttons if user is admin AND in private channel
+        if is_admin and is_private_channel:
+            self.add_item(CopyToSMBButton("PrivateMovies", "PrivateMovies", torrent_hash, torrent_name, qbit_integration, db))
+            self.add_item(CopyToSMBButton("PrivateShows", "PrivateShows", torrent_hash, torrent_name, qbit_integration, db))
 
 
 class QBittorrentCog(commands.Cog, name="qBittorrent"):
@@ -217,6 +403,8 @@ class QBittorrentCog(commands.Cog, name="qBittorrent"):
         self.qbit = None
         # Store search results per user (user_id -> list of torrents)
         self.user_search_results: Dict[int, List[Dict[str, Any]]] = {}
+        # Initialize database
+        self.db = DownloadJobDB()
     
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -227,9 +415,15 @@ class QBittorrentCog(commands.Cog, name="qBittorrent"):
                 await self.qbit.connect()
             except IntegrationError as e:
                 print(f"Warning: Failed to connect to qBittorrent: {e}")
+        
+        # Start the background task to check download status
+        self.check_download_status.start()
     
     async def cog_unload(self):
         """Called when the cog is unloaded."""
+        # Stop the background task
+        self.check_download_status.cancel()
+        
         if self.qbit:
             await self.qbit.disconnect()
     
@@ -301,8 +495,29 @@ class QBittorrentCog(commands.Cog, name="qBittorrent"):
         self._check_integration()
         
         try:
-            await self.qbit.add_torrent(torrent)
-            await ctx.send("✅ Torrent added successfully!")
+            torrent_hash = await self.qbit.add_torrent(torrent)
+            
+            # Get torrent name if we have a hash
+            torrent_name = "Unknown"
+            if torrent_hash:
+                # Try to get the torrent info to get the name
+                try:
+                    torrent_info = await self.qbit.get_torrent_by_hash(torrent_hash)
+                    if torrent_info:
+                        torrent_name = torrent_info.get("name", torrent[:100])
+                except Exception:
+                    torrent_name = torrent[:100] if len(torrent) > 100 else torrent
+                
+                # Save job to database
+                self.db.add_job(
+                    user_id=ctx.author.id,
+                    torrent_hash=torrent_hash,
+                    torrent_name=torrent_name,
+                    channel_id=ctx.channel.id if ctx.channel else None,
+                    message_id=ctx.message.id if ctx.message else None
+                )
+            
+            await ctx.send("✅ Torrent added successfully! You'll be notified when it completes.")
         except IntegrationError as e:
             await ctx.send(f"❌ Error: {str(e)}")
     
@@ -404,7 +619,7 @@ class QBittorrentCog(commands.Cog, name="qBittorrent"):
         )
         
         # Create select menu for downloading
-        view = DownloadSelectView(results[:25], self.qbit)  # Discord limit is 25 options
+        view = DownloadSelectView(results[:25], self.qbit, self.db)  # Discord limit is 25 options
         
         await ctx.send(embed=embed, view=view)
     
@@ -488,6 +703,236 @@ class QBittorrentCog(commands.Cog, name="qBittorrent"):
             await search_msg.edit(content=f"❌ Error: {str(e)}")
         except Exception as e:
             await search_msg.edit(content=f"❌ Unexpected error: {str(e)}")
+    
+    @tasks.loop(minutes=1)
+    async def check_download_status(self):
+        """Background task to check download status and notify users when complete."""
+        if not self.qbit or not self.qbit.is_connected:
+            return
+        
+        try:
+            # Get all active jobs from database
+            active_jobs = self.db.get_active_jobs()
+            
+            if not active_jobs:
+                return
+            
+            # Check status of each active job
+            for job in active_jobs:
+                torrent_hash = job["torrent_hash"]
+                user_id = job["user_id"]
+                torrent_name = job["torrent_name"]
+                
+                try:
+                    # Get current torrent status from qBittorrent
+                    torrent_info = await self.qbit.get_torrent_by_hash(torrent_hash)
+                    
+                    if not torrent_info:
+                        # Torrent not found - might have been deleted
+                        self.db.update_job_status(torrent_hash, "deleted")
+                        continue
+                    
+                    state = torrent_info.get("state", "").lower()
+                    progress = torrent_info.get("progress", 0.0)
+                    
+                    # Check if torrent is completed
+                    # qBittorrent states: uploading, stalledUP, queuedUP, pausedUP, checkingUP, forcedUP, allocating, downloading, stalledDL, queuedDL, checkingDL, pausedDL, forcedDL, missingFiles, error, unknown
+                    # Completed states typically include: uploading, stalledUP, queuedUP, pausedUP, checkingUP, forcedUP
+                    is_completed = (
+                        progress >= 1.0 or
+                        state in ["uploading", "stalledup", "queuedup", "pausedup", "checkingup", "forcedup"] or
+                        (state == "downloading" and progress >= 0.999)
+                    )
+                    
+                    if is_completed and not job.get("notified", False):
+                        # Update job status
+                        self.db.update_job_status(
+                            torrent_hash,
+                            "completed",
+                            completed_at=datetime.now()
+                        )
+                        
+                        # Mark as notified
+                        self.db.mark_notified(torrent_hash)
+                        
+                        # Send notification as reply in the same channel
+                        try:
+                            # Format file size if available
+                            size = torrent_info.get("size", 0)
+                            size_str = "Unknown"
+                            if isinstance(size, (int, float)) and size > 0:
+                                size_val = size
+                                for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                                    if size_val < 1024.0:
+                                        size_str = f"{size_val:.2f} {unit}"
+                                        break
+                                    size_val /= 1024.0
+                            
+                            embed = discord.Embed(
+                                title="✅ Download Complete!",
+                                description=f"Your torrent has finished downloading.",
+                                color=discord.Color.green(),
+                                timestamp=datetime.now()
+                            )
+                            embed.add_field(
+                                name="Torrent Name",
+                                value=torrent_name[:1024],
+                                inline=False
+                            )
+                            embed.add_field(
+                                name="Size",
+                                value=size_str,
+                                inline=True
+                            )
+                            embed.add_field(
+                                name="Status",
+                                value=state.title(),
+                                inline=True
+                            )
+                            
+                            # Try to reply to the original message
+                            channel_id = job.get("channel_id")
+                            message_id = job.get("message_id")
+                            
+                            # Get user and channel for button view
+                            user = None
+                            member = None
+                            channel = None
+                            try:
+                                if channel_id:
+                                    channel = self.bot.get_channel(channel_id)
+                                    if channel and hasattr(channel, 'guild'):
+                                        # Try to get member from guild (for permission checking)
+                                        try:
+                                            member = await channel.guild.fetch_member(user_id)
+                                        except discord.NotFound:
+                                            # User not in guild, use User object
+                                            user = await self.bot.fetch_user(user_id)
+                                    else:
+                                        user = await self.bot.fetch_user(user_id)
+                                else:
+                                    user = await self.bot.fetch_user(user_id)
+                            except Exception as e:
+                                print(f"Error fetching user/member: {e}")
+                            
+                            # Create button view for copying to SMB
+                            # Use member if available (for permission checks), otherwise user
+                            view_user = member if member else user
+                            if view_user and channel:
+                                view = CopyToSMBView(
+                                    torrent_hash=torrent_hash,
+                                    torrent_name=torrent_name,
+                                    qbit_integration=self.qbit,
+                                    db=self.db,
+                                    user=view_user,
+                                    channel_id=channel_id
+                                )
+                            else:
+                                view = None
+                            
+                            if channel_id and message_id:
+                                try:
+                                    channel = self.bot.get_channel(channel_id)
+                                    if channel:
+                                        try:
+                                            # Try to fetch and reply to the original message
+                                            original_message = await channel.fetch_message(message_id)
+                                            await original_message.reply(embed=embed, view=view, mention_author=True)
+                                            continue  # Successfully sent, skip fallback
+                                        except discord.NotFound:
+                                            # Message not found, fall through to channel send
+                                            pass
+                                        except discord.Forbidden:
+                                            # No permission to reply, fall through to channel send
+                                            pass
+                                        
+                                        # Fallback: send in channel if reply failed
+                                        await channel.send(f"<@{user_id}>", embed=embed, view=view)
+                                        continue  # Successfully sent
+                                except Exception as e:
+                                    print(f"Error sending reply notification: {e}")
+                            
+                            # Last resort: try to send DM if channel info not available
+                            user = await self.bot.fetch_user(user_id)
+                            if user:
+                                await user.send(embed=embed)
+                        except discord.Forbidden:
+                            # User has DMs disabled and channel send failed
+                            print(f"Could not send notification to user {user_id}: DMs disabled and channel unavailable")
+                        except Exception as e:
+                            print(f"Error sending notification to user {user_id}: {e}")
+                    
+                    elif state in ["error", "missingfiles"]:
+                        # Torrent has an error
+                        self.db.update_job_status(torrent_hash, "error")
+                        
+                        # Notify user of error as reply in the same channel
+                        try:
+                            embed = discord.Embed(
+                                title="❌ Download Error",
+                                description=f"Your torrent encountered an error.",
+                                color=discord.Color.red(),
+                                timestamp=datetime.now()
+                            )
+                            embed.add_field(
+                                name="Torrent Name",
+                                value=torrent_name[:1024],
+                                inline=False
+                            )
+                            embed.add_field(
+                                name="Error State",
+                                value=state.title(),
+                                inline=True
+                            )
+                            
+                            # Try to reply to the original message
+                            channel_id = job.get("channel_id")
+                            message_id = job.get("message_id")
+                            
+                            if channel_id and message_id:
+                                try:
+                                    channel = self.bot.get_channel(channel_id)
+                                    if channel:
+                                        try:
+                                            # Try to fetch and reply to the original message
+                                            original_message = await channel.fetch_message(message_id)
+                                            await original_message.reply(embed=embed, mention_author=True)
+                                            continue  # Successfully sent, skip fallback
+                                        except discord.NotFound:
+                                            # Message not found, fall through to channel send
+                                            pass
+                                        except discord.Forbidden:
+                                            # No permission to reply, fall through to channel send
+                                            pass
+                                        
+                                        # Fallback: send in channel if reply failed
+                                        await channel.send(f"<@{user_id}>", embed=embed)
+                                        continue  # Successfully sent
+                                except Exception as e:
+                                    print(f"Error sending error reply notification: {e}")
+                            
+                            # Last resort: try to send DM if channel info not available
+                            user = await self.bot.fetch_user(user_id)
+                            if user:
+                                await user.send(embed=embed)
+                        except discord.Forbidden:
+                            # User has DMs disabled and channel send failed
+                            print(f"Could not send error notification to user {user_id}: DMs disabled and channel unavailable")
+                        except Exception as e:
+                            print(f"Error sending error notification to user {user_id}: {e}")
+                
+                except IntegrationError as e:
+                    print(f"Error checking torrent {torrent_hash}: {e}")
+                except Exception as e:
+                    print(f"Unexpected error checking torrent {torrent_hash}: {e}")
+        
+        except Exception as e:
+            print(f"Error in check_download_status task: {e}")
+    
+    @check_download_status.before_loop
+    async def before_check_download_status(self):
+        """Wait until bot is ready before starting the task."""
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot):

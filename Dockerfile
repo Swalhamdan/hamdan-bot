@@ -8,8 +8,11 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Install system dependencies if needed
+# Install system dependencies including docker CLI
+# Docker CLI is needed to execute docker cp commands on the host
+# Note: We only need the CLI, not the daemon, since we mount the host's docker socket
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching

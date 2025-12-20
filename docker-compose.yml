@@ -14,6 +14,8 @@ services:
     volumes:
       # Optional: Mount logs directory if you want persistent logs
       - ./logs:/app/logs
+      # Mount Docker socket to allow executing docker commands on host
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - bot-network
     # Allow access to host services (e.g., qBittorrent running on host)

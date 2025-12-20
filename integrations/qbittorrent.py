@@ -106,7 +106,7 @@ class QBittorrentIntegration(BaseIntegration):
         except Exception as e:
             raise IntegrationError(f"Failed to get torrents: {str(e)}")
     
-    async def add_torrent(self, torrent: str, save_path: str = None) -> bool:
+    async def add_torrent(self, torrent: str, save_path: str = None) -> Optional[str]:
         """
         Add a torrent to qBittorrent.
         
@@ -115,7 +115,7 @@ class QBittorrentIntegration(BaseIntegration):
             save_path: Optional save path for the torrent
             
         Returns:
-            True if successful
+            Torrent hash if successful, None otherwise
         """
         if not self.is_connected:
             raise IntegrationError("Not connected to qBittorrent")
@@ -128,9 +128,104 @@ class QBittorrentIntegration(BaseIntegration):
                 )
             else:
                 self.client.torrents_add(urls=torrent)
-            return True
+            
+            # Wait a moment for the torrent to be added
+            await asyncio.sleep(2)
+            
+            # Try to get the torrent hash from the magnet link or by matching name
+            # For magnet links, we can extract the hash from the link
+            if torrent.startswith("magnet:"):
+                # Extract hash from magnet link (format: magnet:?xt=urn:btih:HASH)
+                try:
+                    import urllib.parse
+                    # Parse the magnet link
+                    parsed = urllib.parse.urlparse(torrent)
+                    params = urllib.parse.parse_qs(parsed.query)
+                    
+                    # Get the xt parameter (info hash)
+                    if 'xt' in params:
+                        xt_value = params['xt'][0] if isinstance(params['xt'], list) else params['xt']
+                        if 'urn:btih:' in xt_value:
+                            hash_value = xt_value.split('urn:btih:')[-1].split('&')[0]
+                            
+                            # qBittorrent uses lowercase hex hashes (40 chars)
+                            # If it's base32 (32 chars), convert to hex
+                            if len(hash_value) == 32:  # Base32 encoded
+                                import base64
+                                try:
+                                    # Base32 to hex conversion
+                                    decoded = base64.b32decode(hash_value.upper())
+                                    hash_value = decoded.hex().lower()
+                                except Exception:
+                                    # If base32 decode fails, try using it as-is
+                                    pass
+                            
+                            # Ensure it's lowercase and 40 chars (hex)
+                            if len(hash_value) == 40:
+                                return hash_value.lower()
+                except Exception as e:
+                    print(f"Error extracting hash from magnet link: {e}")
+            
+            # Fallback: Get the most recently added torrent
+            # This works for both magnet links and torrent files
+            try:
+                torrents = self.client.torrents_info(sort="added_on", reverse=True, limit=1)
+                if torrents:
+                    torrent_obj = torrents[0]
+                    # Handle both dict and object formats
+                    if isinstance(torrent_obj, dict):
+                        return torrent_obj.get("hash", None)
+                    else:
+                        return getattr(torrent_obj, "hash", None)
+            except Exception as e:
+                print(f"Error getting recently added torrent: {e}")
+            
+            return None
         except Exception as e:
             raise IntegrationError(f"Failed to add torrent: {str(e)}")
+    
+    async def get_torrent_by_hash(self, torrent_hash: str) -> Optional[Dict[str, Any]]:
+        """
+        Get torrent information by hash.
+        
+        Args:
+            torrent_hash: Hash of the torrent
+            
+        Returns:
+            Torrent dictionary or None if not found
+        """
+        if not self.is_connected:
+            raise IntegrationError("Not connected to qBittorrent")
+        
+        try:
+            torrents = self.client.torrents_info(torrent_hashes=torrent_hash)
+            if torrents and len(torrents) > 0:
+                torrent = torrents[0]
+                # Convert to dict if it's an object
+                if isinstance(torrent, dict):
+                    return torrent
+                else:
+                    # Convert object to dict
+                    return {
+                        "hash": getattr(torrent, "hash", torrent_hash),
+                        "name": getattr(torrent, "name", "Unknown"),
+                        "state": getattr(torrent, "state", "unknown"),
+                        "progress": getattr(torrent, "progress", 0.0),
+                        "size": getattr(torrent, "size", 0),
+                        "downloaded": getattr(torrent, "downloaded", 0),
+                        "uploaded": getattr(torrent, "uploaded", 0),
+                        "dlspeed": getattr(torrent, "dlspeed", 0),
+                        "upspeed": getattr(torrent, "upspeed", 0),
+                        "num_seeds": getattr(torrent, "num_seeds", 0),
+                        "num_leechs": getattr(torrent, "num_leechs", 0),
+                        "added_on": getattr(torrent, "added_on", 0),
+                        "completion_on": getattr(torrent, "completion_on", 0),
+                        "content_path": getattr(torrent, "content_path", getattr(torrent, "save_path", "")),
+                        "save_path": getattr(torrent, "save_path", getattr(torrent, "content_path", "")),
+                    }
+            return None
+        except Exception as e:
+            raise IntegrationError(f"Failed to get torrent by hash: {str(e)}")
     
     async def pause_torrent(self, torrent_hash: str) -> bool:
         """
