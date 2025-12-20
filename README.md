@@ -42,6 +42,39 @@ The bot uses a modular integration system where each external service (qBittorre
 
 ## Setup
 
+### Option 1: Docker Compose (Recommended)
+
+1. **Configure Environment Variables**:
+   Create a `.env` file in the project root:
+   ```env
+   BOT_TOKEN=your_discord_bot_token_here
+   PREFIX=!
+   
+   # qBittorrent (optional)
+   # If qBittorrent is running on the host, use host.docker.internal
+   # If qBittorrent is in another container, use the container name or service name
+   QBIT_HOST=http://host.docker.internal:8080
+   QBIT_USERNAME=admin
+   QBIT_PASSWORD=adminadmin
+   ```
+
+2. **Build and Run**:
+   ```bash
+   docker-compose up -d
+   ```
+
+3. **View Logs**:
+   ```bash
+   docker-compose logs -f bot
+   ```
+
+4. **Stop the Bot**:
+   ```bash
+   docker-compose down
+   ```
+
+### Option 2: Local Development
+
 1. **Install Dependencies**:
    ```bash
    pip install -r requirements.txt
