@@ -173,7 +173,7 @@ class DownloadSelect(discord.ui.Select):
         title = info["title"]
         
         # Use description link or file URL
-        download_url = info["desc_url"] or info["file_url"]
+        download_url = info["file_url"]
         
         if not download_url:
             await interaction.response.send_message(
@@ -413,7 +413,7 @@ class QBittorrentCog(commands.Cog, name="qBittorrent"):
         self, 
         ctx: commands.Context, 
         pattern: str,
-        plugins: str = "LimeTorrents",
+        plugins: str = "piratebay",
         category: str = "all"
     ):
         """
