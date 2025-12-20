@@ -37,8 +37,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
-# Create a non-root user for security
-RUN useradd -m -u 1000 botuser && \
+# Create a non-root user and docker group
+# Use GID 999 which is typically the docker group GID on most systems
+# This allows the user to access the Docker socket
+RUN groupadd -g 999 docker && \
+    useradd -m -u 1000 -G docker botuser && \
     chown -R botuser:botuser /app
 
 # Switch to non-root user
