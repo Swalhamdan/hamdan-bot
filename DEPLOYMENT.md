@@ -91,6 +91,19 @@ docker compose up -d
 - Use: `http://server-ip:8080` or `http://server-hostname:8080`
 - Ensure firewall allows connections
 
+## SMB Mounts for Copy Buttons
+
+If the bot runs in a container and you use the copy buttons, bind-mount
+the SMB destinations into the bot container so `docker cp` writes to
+the host paths:
+
+```yaml
+volumes:
+  - /mnt/Movies:/mnt/Movies:rw
+  - /mnt/Shows:/mnt/Shows:rw
+  - /mnt/PrivateShows:/mnt/PrivateShows:rw
+```
+
 ## Troubleshooting
 
 **Bot won't start:**
