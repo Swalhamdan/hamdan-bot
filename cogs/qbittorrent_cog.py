@@ -1,6 +1,7 @@
 """
 Discord commands for qBittorrent integration.
 """
+import os
 import discord
 from discord.ext import commands, tasks
 from core.errors import IntegrationError
@@ -256,7 +257,14 @@ class CopyToSMBButton(discord.ui.Button):
                 return
             
             # Get the content path (where files are stored in qBittorrent container)
-            content_path = torrent_info.get("content_path", "") or torrent_info.get("save_path", "")
+            content_path = torrent_info.get("content_path", "")
+            if not content_path:
+                save_path = torrent_info.get("save_path", "")
+                torrent_root = torrent_info.get("name", "")
+                if save_path and torrent_root:
+                    content_path = os.path.join(save_path, torrent_root)
+                else:
+                    content_path = save_path
             if not content_path:
                 await interaction.followup.send(
                     "❌ Could not determine torrent file location.",
