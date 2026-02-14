@@ -131,7 +131,11 @@ class AdminCog(commands.Cog, name="Admin"):
             if process.returncode != 0:
                 if "docker: command not found" in error or "docker: not found" in error:
                     error = "Docker CLI not found. Please install Docker on the host."
-                await ctx.send(f"❌ Command failed:\n```{error or 'Unknown error'}```")
+                if not error:
+                    error = "Unknown error"
+                if len(error) > 1800:
+                    error = error[:1800] + "\n... (truncated)"
+                await ctx.send(f"❌ Command failed:\n```{error}```")
                 return
             
             if not output:
