@@ -26,6 +26,8 @@ class Settings:
     QBIT_USERNAME: Optional[str] = os.getenv("QBIT_USERNAME", None)
     QBIT_PASSWORD: Optional[str] = os.getenv("QBIT_PASSWORD", None)
     QBIT_CONTAINER_NAME: str = os.getenv("QBIT_CONTAINER_NAME", "qbittorrent")
+    QBIT_COMPOSE_DIR: str = os.getenv("QBIT_COMPOSE_DIR", "/home/kuthban/qbittorrent")
+    QBIT_COMPOSE_FILE: str = os.getenv("QBIT_COMPOSE_FILE", "docker-compose.yaml")
     
     # Add more service configurations here as needed
     # Example:

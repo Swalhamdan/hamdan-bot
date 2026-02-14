@@ -26,6 +26,9 @@
    QBIT_HOST=http://localhost:8080
    QBIT_USERNAME=admin
    QBIT_PASSWORD=adminadmin
+   # Optional: where the qBittorrent compose file lives on the host
+   QBIT_COMPOSE_DIR=/home/kuthban/qbittorrent
+   QBIT_COMPOSE_FILE=docker-compose.yml
    ```
 
 4. **Start the bot**:
