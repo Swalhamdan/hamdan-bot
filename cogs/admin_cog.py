@@ -101,8 +101,6 @@ class AdminCog(commands.Cog, name="Admin"):
         base_cmd = [
             "docker",
             "compose",
-            "--project-directory",
-            str(compose_dir),
             "-f",
             str(compose_path),
         ]
@@ -121,6 +119,7 @@ class AdminCog(commands.Cog, name="Admin"):
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
+                cwd=str(compose_dir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
