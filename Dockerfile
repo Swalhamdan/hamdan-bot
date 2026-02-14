@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        elif [ "$ARCH" = "arm64" ]; then DOCKER_ARCH="aarch64"; \
        elif [ "$ARCH" = "armhf" ]; then DOCKER_ARCH="armel"; \
        else DOCKER_ARCH="x86_64"; fi \
-    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-24.0.7.tgz" -o /tmp/docker.tgz \
+    && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-26.1.4.tgz" -o /tmp/docker.tgz \
     && tar -xz -C /tmp -f /tmp/docker.tgz \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && chmod +x /usr/local/bin/docker \
