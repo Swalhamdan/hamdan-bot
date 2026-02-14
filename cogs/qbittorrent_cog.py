@@ -2,6 +2,8 @@
 Discord commands for qBittorrent integration.
 """
 import os
+import shutil
+import tempfile
 import discord
 from discord.ext import commands, tasks
 from core.errors import IntegrationError
@@ -317,17 +319,73 @@ class CopyToSMBButton(discord.ui.Button):
                             f"# sudo chown -R $(whoami):$(whoami) /mnt/{self.smb_path}\n"
                             f"```"
                         )
-                    
-                    await interaction.followup.send(
-                        f"❌ Error copying files: {error_msg}\n\n"
-                        f"**Debug info:**\n"
-                        f"- Container: {container_name}\n"
-                        f"- Source: {content_path}\n"
-                        f"- Destination: {dest_path}\n"
-                        f"- Make sure the destination directory exists and is writable on the host",
-                        ephemeral=False
-                    )
-                    return
+                    else:
+                        error_msg = error_msg.strip()
+
+                    # Fallback for CIFS mounts that reject chmod/chown
+                    chmod_denied = "chmod" in error_msg.lower() and "operation not permitted" in error_msg.lower()
+                    if chmod_denied:
+                        try:
+                            temp_dir = tempfile.mkdtemp(prefix="qbit-copy-")
+                            fallback_process = await asyncio.create_subprocess_exec(
+                                "docker", "cp", f"{container_name}:{content_path}", temp_dir,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE
+                            )
+                            _, fallback_err = await fallback_process.communicate()
+                            if fallback_process.returncode != 0:
+                                raise RuntimeError(
+                                    fallback_err.decode().strip() if fallback_err else "Fallback copy failed."
+                                )
+
+                            src_basename = os.path.basename(content_path.rstrip("/"))
+                            temp_src = os.path.join(temp_dir, src_basename) if src_basename else temp_dir
+                            if not os.path.exists(temp_src):
+                                temp_src = temp_dir
+
+                            def copy_without_metadata(src, dest_dir):
+                                if os.path.isdir(src):
+                                    target = os.path.join(dest_dir, os.path.basename(src.rstrip("/")))
+                                    shutil.copytree(
+                                        src,
+                                        target,
+                                        dirs_exist_ok=True,
+                                        copy_function=shutil.copyfile
+                                    )
+                                else:
+                                    os.makedirs(dest_dir, exist_ok=True)
+                                    shutil.copyfile(src, os.path.join(dest_dir, os.path.basename(src)))
+
+                            await asyncio.to_thread(copy_without_metadata, temp_src, dest_path)
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                            # Fallback succeeded; continue as success
+                        except Exception as fallback_error:
+                            try:
+                                shutil.rmtree(temp_dir, ignore_errors=True)
+                            except Exception:
+                                pass
+                            error_msg = f"{error_msg}\n\nFallback copy failed: {fallback_error}"
+                            await interaction.followup.send(
+                                f"❌ Error copying files: {error_msg}\n\n"
+                                f"**Debug info:**\n"
+                                f"- Container: {container_name}\n"
+                                f"- Source: {content_path}\n"
+                                f"- Destination: {dest_path}\n"
+                                f"- Make sure the destination directory exists and is writable on the host",
+                                ephemeral=False
+                            )
+                            return
+                    else:
+                        await interaction.followup.send(
+                            f"❌ Error copying files: {error_msg}\n\n"
+                            f"**Debug info:**\n"
+                            f"- Container: {container_name}\n"
+                            f"- Source: {content_path}\n"
+                            f"- Destination: {dest_path}\n"
+                            f"- Make sure the destination directory exists and is writable on the host",
+                            ephemeral=False
+                        )
+                        return
                 
                 # Successfully copied, now delete the torrent
                 try:
