@@ -283,6 +283,7 @@ class CopyToSMBButton(discord.ui.Button):
             try:
                 # Execute docker cp: docker cp <container>:<source_path> <dest_path>
                 # The destination path is on the host filesystem
+                # Note: The destination directory must exist and be writable on the host
                 process = await asyncio.create_subprocess_exec(
                     "docker", "cp", f"{container_name}:{content_path}", dest_path,
                     stdout=asyncio.subprocess.PIPE,
@@ -295,6 +296,19 @@ class CopyToSMBButton(discord.ui.Button):
                     # Check if docker command was not found
                     if "docker: command not found" in error_msg or "docker: not found" in error_msg:
                         error_msg = "Docker CLI not found in container. Please ensure docker.io is installed in the Dockerfile."
+                    # Check for permission denied on destination
+                    elif "permission denied" in error_msg.lower() or "mkdir" in error_msg.lower():
+                        error_msg = (
+                            f"{error_msg}\n\n"
+                            f"**Solution:** The destination directory `/mnt/{self.smb_path}` must exist on the host "
+                            f"and be writable. Please run on the host:\n"
+                            f"```bash\n"
+                            f"sudo mkdir -p /mnt/{self.smb_path}\n"
+                            f"sudo chmod 777 /mnt/{self.smb_path}\n"
+                            f"# Or set appropriate ownership:\n"
+                            f"# sudo chown -R $(whoami):$(whoami) /mnt/{self.smb_path}\n"
+                            f"```"
+                        )
                     
                     await interaction.followup.send(
                         f"❌ Error copying files: {error_msg}\n\n"
@@ -302,7 +316,7 @@ class CopyToSMBButton(discord.ui.Button):
                         f"- Container: {container_name}\n"
                         f"- Source: {content_path}\n"
                         f"- Destination: {dest_path}\n"
-                        f"- Make sure Docker socket is mounted and docker CLI is installed",
+                        f"- Make sure the destination directory exists and is writable on the host",
                         ephemeral=False
                     )
                     return
