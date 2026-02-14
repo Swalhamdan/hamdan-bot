@@ -15,6 +15,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Detect architecture and download appropriate binary
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    docker-compose \
     && ARCH=$(dpkg --print-architecture) \
     && if [ "$ARCH" = "amd64" ]; then DOCKER_ARCH="x86_64"; \
        elif [ "$ARCH" = "arm64" ]; then DOCKER_ARCH="aarch64"; \
