@@ -73,12 +73,27 @@ class AdminCog(commands.Cog, name="Admin"):
             return
         
         compose_dir = settings.QBIT_COMPOSE_DIR
-        compose_file = settings.QBIT_COMPOSE_FILE or "docker-compose.yml"
-        compose_path = Path(compose_dir) / compose_file
-        
-        if not compose_path.exists():
+        compose_file = (settings.QBIT_COMPOSE_FILE or "").strip()
+        compose_path = Path(compose_dir) / compose_file if compose_file else None
+
+        if not compose_path or not compose_path.exists():
+            # Try common compose filenames if not explicitly set or missing
+            candidates = [
+                "docker-compose.yml",
+                "docker-compose.yaml",
+                "compose.yml",
+                "compose.yaml",
+            ]
+            compose_path = None
+            for candidate in candidates:
+                candidate_path = Path(compose_dir) / candidate
+                if candidate_path.exists():
+                    compose_path = candidate_path
+                    break
+
+        if not compose_path:
             await ctx.send(
-                f"❌ Compose file not found: `{compose_path}`\n"
+                f"❌ Compose file not found in `{compose_dir}`.\n"
                 f"Set `QBIT_COMPOSE_DIR` and `QBIT_COMPOSE_FILE` in `.env` if needed."
             )
             return
