@@ -99,24 +99,21 @@ class AdminCog(commands.Cog, name="Admin"):
             return
         
         base_cmd = [
-            "docker",
-            "compose",
             "-f",
             str(compose_path),
         ]
         
         if action == "up":
-            cmd = base_cmd + ["up", "-d"]
+            sub_cmd = ["up", "-d"]
         elif action == "down":
-            cmd = base_cmd + ["down"]
+            sub_cmd = ["down"]
         elif action == "restart":
-            cmd = base_cmd + ["restart"]
+            sub_cmd = ["restart"]
         else:  # status
-            cmd = base_cmd + ["ps"]
-        
-        await ctx.send(f"🧰 Running: `docker compose {action}`")
-        
-        try:
+            sub_cmd = ["ps"]
+
+        async def run_compose(command_prefix):
+            cmd = command_prefix + base_cmd + sub_cmd
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(compose_dir),
@@ -124,10 +121,22 @@ class AdminCog(commands.Cog, name="Admin"):
                 stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
-            output = stdout.decode().strip()
-            error = stderr.decode().strip()
+            return process.returncode, stdout.decode().strip(), stderr.decode().strip(), cmd
+
+        await ctx.send("🧰 Running compose command...")
+
+        try:
+            returncode, output, error, cmd = await run_compose(["docker", "compose"])
+
+            # Fallback for older Docker versions without 'docker compose'
+            if returncode != 0 and (
+                "unknown shorthand flag: 'f'" in error.lower()
+                or "docker: 'compose' is not a docker command" in error.lower()
+                or "unknown flag: -f" in error.lower()
+            ):
+                returncode, output, error, cmd = await run_compose(["docker-compose"])
             
-            if process.returncode != 0:
+            if returncode != 0:
                 if "docker: command not found" in error or "docker: not found" in error:
                     error = "Docker CLI not found. Please install Docker on the host."
                 if not error:
@@ -142,7 +151,8 @@ class AdminCog(commands.Cog, name="Admin"):
             if len(output) > 1800:
                 output = output[:1800] + "\n... (truncated)"
             
-            await ctx.send(f"✅ Done:\n```{output}```")
+            pretty_cmd = " ".join(cmd)
+            await ctx.send(f"✅ Done (`{pretty_cmd}`):\n```{output}```")
         except Exception as e:
             await ctx.send(f"❌ Error executing compose command: {str(e)}")
 
